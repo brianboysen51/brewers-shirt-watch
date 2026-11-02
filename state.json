@@ -1,12 +1,4 @@
 {
- "Fanatics": {
-  "error": "HTTPError: HTTP Error 403: Forbidden",
-  "fails": 1
- },
- "MLB Shop": {
-  "error": "HTTPError: HTTP Error 403: Forbidden",
-  "fails": 1
- },
  "Rally House": {
   "M": false,
   "S": false,
