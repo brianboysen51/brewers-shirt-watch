@@ -1,0 +1,17 @@
+{
+ "Fanatics": {
+  "error": "HTTPError: HTTP Error 403: Forbidden",
+  "fails": 1
+ },
+ "MLB Shop": {
+  "error": "HTTPError: HTTP Error 403: Forbidden",
+  "fails": 1
+ },
+ "Rally House": {
+  "M": false,
+  "S": false,
+  "error": null,
+  "fails": 0
+ },
+ "last_run_day": "2026-11-02"
+}
