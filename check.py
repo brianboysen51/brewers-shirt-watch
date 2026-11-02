@@ -17,10 +17,11 @@ STATE = ROOT / "state.json"
 WANT = ("S", "M")
 BLIND_AFTER = 6  # consecutive failed checks before a "watcher is blind" notice
 
+# MLB Shop / Fanatics / Lids (one shared Fanatics stock pool) return Akamai 403 to any
+# scripted request, from a UK home IP and from GitHub's US runners alike, so they are
+# not watched here.
 SITES = {
-    "MLB Shop": "https://www.mlbshop.com/milwaukee-brewers/womens-milwaukee-brewers-fanatics-cream-2026-world-series-champions-parade-t-shirt/t-14337650+p-022261122766871+z-9-129891230",
-    "Fanatics": "https://www.fanatics.com/mlb/milwaukee-brewers/milwaukee-brewers-fanatics-womens-2026-world-series-champions-parade-t-shirt-cream/o-1209+t-69111061+p-9155500160355+z-9-3616654764",
-    "Rally House": "https://www.rallyhouse.com/Brewers-Womens-Cream-2026-World-Series-Champions-Parade-Locker-Room-Short-Sleeve-T-Shirt-9589313",
+    "Rally House":"https://www.rallyhouse.com/Brewers-Womens-Cream-2026-World-Series-Champions-Parade-Locker-Room-Short-Sleeve-T-Shirt-9589313",
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -125,7 +126,7 @@ def sizes_in(html):
 def main():
     if "--test" in sys.argv:
         ntfy("TEST: Brewers parade tee watcher", "Test push. A real alert means S or M is in stock: buy immediately.",
-             priority="urgent", tags="rotating_light,shirt", click=SITES["MLB Shop"])
+             priority="urgent", tags="rotating_light,shirt", click=SITES["Rally House"])
         return
     debug = "--debug" in sys.argv
     state = json.loads(STATE.read_text()) if STATE.exists() else {}

@@ -1,10 +1,10 @@
 # brewers-shirt-watch
 
 Pushes an urgent ntfy alert when the Women's Brewers cream 2026 World Series
-Champions Parade tee comes back in size S or M at MLB Shop, Fanatics, or Rally House.
+Champions Parade tee comes back in size S or M at Rally House.
 
-Runs on GitHub Actions every ~5 min, because Fanatics-run stores block requests
-from Brian's UK connection. Secret: `NTFY_TOPIC`.
+Runs on GitHub Actions every ~5 min. Secret: `NTFY_TOPIC`. MLB Shop / Fanatics / Lids
+are not watched: their Akamai bot wall returns 403 to any scripted request.
 
 - Test push: Actions > watch > Run workflow > mode `test`
 - Inspect fetched pages: mode `debug`, download the `pages` artifact
