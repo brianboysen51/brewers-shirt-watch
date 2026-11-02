@@ -1,9 +1,15 @@
 """Restock watcher: Women's Brewers cream 2026 World Series Champions Parade tee, sizes S/M.
 
 Fetches each seller page, reads per-size stock from the page's embedded JSON
-(schema.org offers + any window.__STATE__ blobs), and pushes an urgent ntfy alert
-when a watched size flips to in stock. State lives in state.json so each restock
-alerts once. Stdlib only so it runs on a bare GitHub Actions runner.
+(schema.org offers, window.__STATE__ blobs, Fanatics' inline size records), and pushes
+an urgent ntfy alert when a watched size flips to in stock. State lives in state.json
+so each restock alerts once.
+
+MLB Shop sits behind Akamai, which 403s plain HTTP clients, so it is loaded in real
+headed Google Chrome (Patchright, run under xvfb-run) with a persistent profile, the
+same way delta-watch drives delta.com. Bundled Chromium gets denied far more often than
+Chrome. Chrome is the .deb unpacked (no sudo) under ~/.local/opt/chrome-deb. Rally House
+is plain HTTP.
 
   python3 check.py            # normal run
   python3 check.py --test     # send a test push and exit
@@ -17,11 +23,13 @@ STATE = ROOT / "state.json"
 WANT = ("S", "M")
 BLIND_AFTER = 6  # consecutive failed checks before a "watcher is blind" notice
 
-# MLB Shop / Fanatics / Lids (one shared Fanatics stock pool) return Akamai 403 to any
-# scripted request, from a UK home IP and from GitHub's US runners alike, so they are
-# not watched here.
+PROFILE = ROOT / "profile"
+CHROME = Path.home() / ".local/opt/chrome-deb/root/opt/google/chrome/chrome"
+# site -> (url, how to fetch). MLB Shop, Fanatics.com and Lids share one Fanatics stock
+# pool, so watching MLB Shop covers all three.
 SITES = {
-    "Rally House":"https://www.rallyhouse.com/Brewers-Womens-Cream-2026-World-Series-Champions-Parade-Locker-Room-Short-Sleeve-T-Shirt-9589313",
+    "MLB Shop": ("https://www.mlbshop.com/milwaukee-brewers/womens-milwaukee-brewers-fanatics-cream-2026-world-series-champions-parade-t-shirt/t-14337650+p-022261122766871+z-9-129891230", "browser"),
+    "Rally House": ("https://www.rallyhouse.com/Brewers-Womens-Cream-2026-World-Series-Champions-Parade-Locker-Room-Short-Sleeve-T-Shirt-9589313", "http"),
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -34,8 +42,16 @@ STOCK_FALSE = ("soldOut", "isSoldOut", "outOfStock", "isOutOfStock")
 STOCK_TEXT = ("availability", "inventoryStatus", "stockStatus", "status")
 
 
+def _env(key):
+    env = ROOT / ".env"
+    for line in env.read_text().splitlines() if env.exists() else []:
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip().strip('"')
+    return os.environ.get(key)
+
+
 def ntfy(title, body, priority="default", tags="", click=None):
-    topic = os.environ.get("NTFY_TOPIC")
+    topic = _env("NTFY_TOPIC")
     if not topic:
         print("ntfy: no NTFY_TOPIC set;", title, "|", body)
         return
@@ -53,6 +69,33 @@ def fetch(url):
         "Accept-Language": "en-US,en;q=0.9"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def fetch_browser(url):
+    """Load url in headed Chromium. A cold profile gets Akamai's 403 page; that page's
+    script sets the cookies, so on a deny we load the homepage once and retry."""
+    from patchright.sync_api import sync_playwright
+    home = re.match(r"https://[^/]+/", url).group(0)
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(str(PROFILE), executable_path=str(CHROME),
+                                                   headless=False, no_viewport=True)
+        try:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            for attempt in range(3):
+                r = page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                if r and r.status == 200 and "Access Denied" not in page.title():
+                    break
+                page.goto(home, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(5000 + 2000 * attempt)
+            else:
+                raise RuntimeError(f"Akamai denied the page ({r.status if r else 'no response'}) after 3 tries")
+            try:
+                page.wait_for_selector("[data-talos=buttonSize]", timeout=20000)
+            except Exception:
+                pass  # parse whatever loaded; the caller reports missing size data
+            return page.content()
+        finally:
+            ctx.close()
 
 
 def json_blobs(html):
@@ -120,20 +163,25 @@ def sizes_in(html):
 
     for blob in json_blobs(html):
         walk(blob)
+    # Fanatics inlines its size records in a script json_blobs can't isolate:
+    # {"itemId":"214362650",...,"size":"S","available":false,...}
+    for size, avail in re.findall(r'"size":"([0-9A-Z]{1,4})","available":(true|false)', html):
+        if size in SIZE_WORDS:
+            found[SIZE_WORDS[size]] = found.get(SIZE_WORDS[size], False) or avail == "true"
     return found
 
 
 def main():
     if "--test" in sys.argv:
         ntfy("TEST: Brewers parade tee watcher", "Test push. A real alert means S or M is in stock: buy immediately.",
-             priority="urgent", tags="rotating_light,shirt", click=SITES["Rally House"])
+             priority="urgent", tags="rotating_light,shirt", click=SITES["MLB Shop"][0])
         return
     debug = "--debug" in sys.argv
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    for site, url in SITES.items():
+    for site, (url, how) in SITES.items():
         st = state.setdefault(site, {"fails": 0})
         try:
-            html = fetch(url)
+            html = fetch_browser(url) if how == "browser" else fetch(url)
             if debug:
                 (ROOT / "debug").mkdir(exist_ok=True)
                 (ROOT / "debug" / f"{site.replace(' ', '_')}.html").write_text(html)

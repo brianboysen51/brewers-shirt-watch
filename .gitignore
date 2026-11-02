@@ -1,2 +1,5 @@
 debug/
 __pycache__/
+.env
+profile/
+state.json
