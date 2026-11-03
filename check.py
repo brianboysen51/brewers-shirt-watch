@@ -28,12 +28,15 @@ BLIND_AFTER = 6  # consecutive failed checks before a "watcher is blind" notice
 PROFILE = ROOT / "profile"
 CHROME = Path.home() / ".local/opt/chrome-deb/root/opt/google/chrome/chrome"
 ITEM = "Brewers Gold/Navy World Series Side Patch 9TWENTY hat"
-# site -> (url, how to fetch, sizes to watch). MLB Shop, Fanatics.com and Lids share one
+# site -> (url, how to fetch, sizes to watch). On Fanatics pages, watch {itemId: label}
+# instead of bare sizes: a product page also embeds its other colors' size records (the
+# Gold/Navy page carries the in-stock Navy OSFM, item 214313435), so matching on size
+# alone gave a false alert on 2026-11-03. MLB Shop, Fanatics.com and Lids share one
 # Fanatics stock pool, so watching MLB Shop covers all three. The yellow hat is its own
 # listing (the navy page hides out-of-stock color swatches). New Era and Rally House
 # don't sell a gold 9TWENTY of this hat (checked 2026-11-03).
 SITES = {
-    "MLB Shop": ("https://www.mlbshop.com/milwaukee-brewers/mens-milwaukee-brewers-new-era-gold/navy-2026-world-series-side-patch-9twenty-adjustable-hat/t-36994327+p-247750670383987+z-9-95215330", "browser", ("OSFM",)),
+    "MLB Shop": ("https://www.mlbshop.com/milwaukee-brewers/mens-milwaukee-brewers-new-era-gold/navy-2026-world-series-side-patch-9twenty-adjustable-hat/t-36994327+p-247750670383987+z-9-95215330", "browser", {"214313434": "OSFM"}),
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -185,6 +188,15 @@ def sizes_in(html):
     return found
 
 
+def items_in(html, ids):
+    """{label: in_stock} for exact Fanatics item ids: {"itemId":"214313434",...,"available":false}"""
+    found = {}
+    for item, avail in re.findall(r'"itemId":"(\d+)"[^{}]{0,200}?"available":(true|false)', html):
+        if item in ids:
+            found[ids[item]] = found.get(ids[item], False) or avail == "true"
+    return found
+
+
 def main():
     if "--test" in sys.argv:
         ntfy(f"TEST: {ITEM} watcher", "Test push. A real alert means it is back in stock: buy immediately.",
@@ -199,7 +211,8 @@ def main():
             if debug:
                 (ROOT / "debug").mkdir(exist_ok=True)
                 (ROOT / "debug" / f"{site.replace(' ', '_')}.html").write_text(html)
-            sizes = sizes_in(html)
+            sizes = items_in(html, want) if isinstance(want, dict) else sizes_in(html)
+            want = list(want.values()) if isinstance(want, dict) else want
             if not any(s in sizes for s in want):
                 raise ValueError(f"no {'/'.join(want)} stock data found in page (sizes seen: {sizes or 'none'})")
         except Exception as e:
