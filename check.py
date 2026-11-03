@@ -1,4 +1,6 @@
-"""Restock watcher: Women's Brewers cream 2026 World Series Champions Parade tee, sizes S/M.
+"""Restock watcher for Brewers merch. Currently: the Gold/Navy (yellow crown) New Era
+2026 World Series Side Patch 9TWENTY adjustable hat. (Previously the women's cream
+Parade tee in S/M, bought 2026-11-03.)
 
 Fetches each seller page, reads per-size stock from the page's embedded JSON
 (schema.org offers, window.__STATE__ blobs, Fanatics' inline size records), and pushes
@@ -8,34 +10,37 @@ so each restock alerts once.
 MLB Shop sits behind Akamai, which 403s plain HTTP clients, so it is loaded in real
 headed Google Chrome (Patchright, run under xvfb-run) with a persistent profile, the
 same way delta-watch drives delta.com. Bundled Chromium gets denied far more often than
-Chrome. Chrome is the .deb unpacked (no sudo) under ~/.local/opt/chrome-deb. Rally House
-is plain HTTP.
+Chrome. Chrome is the .deb unpacked (no sudo) under ~/.local/opt/chrome-deb. A profile
+Akamai has flagged stays denied, so a denied run wipes the profile and retries cold
+(homepage first, which sets fresh cookies, then the product page).
 
   python3 check.py            # normal run
   python3 check.py --test     # send a test push and exit
   python3 check.py --debug    # also save fetched pages to debug/
 """
-import json, os, re, sys, time, urllib.request, urllib.error
+import json, os, re, shutil, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 STATE = ROOT / "state.json"
-WANT = ("S", "M")
 BLIND_AFTER = 6  # consecutive failed checks before a "watcher is blind" notice
 
 PROFILE = ROOT / "profile"
 CHROME = Path.home() / ".local/opt/chrome-deb/root/opt/google/chrome/chrome"
-# site -> (url, how to fetch). MLB Shop, Fanatics.com and Lids share one Fanatics stock
-# pool, so watching MLB Shop covers all three.
+ITEM = "Brewers Gold/Navy World Series Side Patch 9TWENTY hat"
+# site -> (url, how to fetch, sizes to watch). MLB Shop, Fanatics.com and Lids share one
+# Fanatics stock pool, so watching MLB Shop covers all three. The yellow hat is its own
+# listing (the navy page hides out-of-stock color swatches). New Era and Rally House
+# don't sell a gold 9TWENTY of this hat (checked 2026-11-03).
 SITES = {
-    "MLB Shop": ("https://www.mlbshop.com/milwaukee-brewers/womens-milwaukee-brewers-fanatics-cream-2026-world-series-champions-parade-t-shirt/t-14337650+p-022261122766871+z-9-129891230", "browser"),
-    "Rally House": ("https://www.rallyhouse.com/Brewers-Womens-Cream-2026-World-Series-Champions-Parade-Locker-Room-Short-Sleeve-T-Shirt-9589313", "http"),
+    "MLB Shop": ("https://www.mlbshop.com/milwaukee-brewers/mens-milwaukee-brewers-new-era-gold/navy-2026-world-series-side-patch-9twenty-adjustable-hat/t-36994327+p-247750670383987+z-9-95215330", "browser", ("OSFM",)),
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
 SIZE_WORDS = {"S": "S", "SM": "S", "SMALL": "S", "M": "M", "MD": "M", "MED": "M", "MEDIUM": "M",
-              "XS": "XS", "L": "L", "LG": "L", "LARGE": "L", "XL": "XL", "2XL": "2XL", "XXL": "2XL", "3XL": "3XL"}
+              "XS": "XS", "L": "L", "LG": "L", "LARGE": "L", "XL": "XL", "2XL": "2XL", "XXL": "2XL", "3XL": "3XL",
+              "OSFM": "OSFM", "OSFA": "OSFM", "ONE SIZE": "OSFM"}
 SIZE_KEYS = ("size", "sizeName", "sizeLabel", "displaySize", "label", "displayValue", "value", "name", "sku")
 STOCK_TRUE = ("available", "isAvailable", "inStock", "isInStock", "purchasable", "isPurchasable")
 STOCK_FALSE = ("soldOut", "isSoldOut", "outOfStock", "isOutOfStock")
@@ -71,31 +76,40 @@ def fetch(url):
         return r.read().decode("utf-8", "replace")
 
 
-def fetch_browser(url):
-    """Load url in headed Chromium. A cold profile gets Akamai's 403 page; that page's
-    script sets the cookies, so on a deny we load the homepage once and retry."""
+class Denied(RuntimeError):
+    pass
+
+
+def _load(url):
+    """One headed Chrome session. A cold profile visits the homepage first: Akamai answers
+    it with a 403 whose script sets the cookies the product page then accepts."""
     from patchright.sync_api import sync_playwright
-    home = re.match(r"https://[^/]+/", url).group(0)
+    cold = not PROFILE.exists()
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(str(PROFILE), executable_path=str(CHROME),
                                                    headless=False, no_viewport=True)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            for attempt in range(3):
-                r = page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                if r and r.status == 200 and "Access Denied" not in page.title():
-                    break
-                page.goto(home, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(5000 + 2000 * attempt)
-            else:
-                raise RuntimeError(f"Akamai denied the page ({r.status if r else 'no response'}) after 3 tries")
-            try:
-                page.wait_for_selector("[data-talos=buttonSize]", timeout=20000)
-            except Exception:
-                pass  # parse whatever loaded; the caller reports missing size data
+            if cold:
+                page.goto(re.match(r"https://[^/]+/", url).group(0), wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(7000)
+            r = page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            if not r or r.status != 200 or "Access Denied" in page.title():
+                raise Denied(f"Akamai denied the page ({r.status if r else 'no response'}, {'cold' if cold else 'warm'} profile)")
+            page.wait_for_timeout(3000)
             return page.content()
         finally:
             ctx.close()
+
+
+def fetch_browser(url):
+    try:
+        return _load(url)
+    except Denied:
+        if not PROFILE.exists():
+            raise
+        shutil.rmtree(PROFILE)  # flagged profile; start over cold
+        return _load(url)
 
 
 def json_blobs(html):
@@ -173,12 +187,12 @@ def sizes_in(html):
 
 def main():
     if "--test" in sys.argv:
-        ntfy("TEST: Brewers parade tee watcher", "Test push. A real alert means S or M is in stock: buy immediately.",
-             priority="urgent", tags="rotating_light,shirt", click=SITES["MLB Shop"][0])
+        ntfy(f"TEST: {ITEM} watcher", "Test push. A real alert means it is back in stock: buy immediately.",
+             priority="urgent", tags="rotating_light,billed_cap", click=SITES["MLB Shop"][0])
         return
     debug = "--debug" in sys.argv
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    for site, (url, how) in SITES.items():
+    for site, (url, how, want) in SITES.items():
         st = state.setdefault(site, {"fails": 0})
         try:
             html = fetch_browser(url) if how == "browser" else fetch(url)
@@ -186,32 +200,31 @@ def main():
                 (ROOT / "debug").mkdir(exist_ok=True)
                 (ROOT / "debug" / f"{site.replace(' ', '_')}.html").write_text(html)
             sizes = sizes_in(html)
-            if not any(s in sizes for s in WANT):
-                raise ValueError(f"no S/M stock data found in page (sizes seen: {sizes or 'none'})")
+            if not any(s in sizes for s in want):
+                raise ValueError(f"no {'/'.join(want)} stock data found in page (sizes seen: {sizes or 'none'})")
         except Exception as e:
             err = f"{type(e).__name__}: {e}"[:200]
             st["fails"] += 1
             st["error"] = err
             print(f"{site}: FAILED ({st['fails']}x) {err}")
             if st["fails"] == BLIND_AFTER:
-                ntfy(f"Shirt watcher blind on {site}", f"{BLIND_AFTER} checks in a row failed: {err}",
+                ntfy(f"{ITEM} watcher blind on {site}", f"{BLIND_AFTER} checks in a row failed: {err}",
                      tags="warning", click=url)
             continue
         if st["fails"] >= BLIND_AFTER:
-            ntfy(f"Shirt watcher recovered on {site}", "Checks are working again.", priority="low", tags="white_check_mark")
+            ntfy(f"{ITEM} watcher recovered on {site}", "Checks are working again.", priority="low", tags="white_check_mark")
         st["fails"], st["error"] = 0, None
         print(f"{site}: " + ", ".join(f"{s}={'IN' if v else 'out'}" for s, v in sorted(sizes.items())))
-        newly = [s for s in WANT if sizes.get(s) and not st.get(s)]
-        for s in WANT:
+        newly = [s for s in want if sizes.get(s) and not st.get(s)]
+        for s in want:
             if s in sizes:
                 st[s] = sizes[s]
         if newly:
-            which = " and ".join(newly)
-            ntfy(f"BUY NOW: Brewers parade tee size {which} back at {site}",
-                 f"Women's cream 2026 WS Champions Parade tee, size {which} is IN STOCK at {site}. "
-                 "It may sell out within minutes. Tap to open and check out now.",
-                 priority="urgent", tags="rotating_light,shirt", click=url)
-    state["last_run_day"] = time.strftime("%Y-%m-%d")  # one commit a day keeps the scheduled workflow alive
+            which = "" if newly == ["OSFM"] else f" size {' and '.join(newly)}"
+            ntfy(f"BUY NOW: yellow Brewers WS hat back at {site}",
+                 f"{ITEM}{which} is IN STOCK at {site}. It may sell out within minutes. "
+                 "Tap to open and check out now.",
+                 priority="urgent", tags="rotating_light,billed_cap", click=url)
     STATE.write_text(json.dumps(state, indent=1, sort_keys=True) + "\n")
 
 
